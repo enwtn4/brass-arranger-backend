@@ -74,10 +74,19 @@ INST_CONFIG = {
 }
 
 
+STANDARD_DURATIONS = [0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0]
+
+def snap_duration(duration_beats):
+    """Snap a beat duration to the nearest standard music21-compatible value."""
+    return min(STANDARD_DURATIONS, key=lambda x: abs(x - duration_beats))
+
+def snap_beat(beat):
+    """Round a beat position to the nearest 16th note to avoid sub-32nd-note artifacts."""
+    return round(beat * 4) / 4.0
+
 def beats_to_duration(duration_beats):
     """Convert beat duration (quarter note = 1.0) to music21 duration type."""
-    from music21 import duration
-    # Snap to nearest standard duration
+    snapped = snap_duration(duration_beats)
     dur_map = [
         (0.125, "32nd"),
         (0.25,  "16th"),
@@ -89,7 +98,7 @@ def beats_to_duration(duration_beats):
         (3.0,   "half"),
         (4.0,   "whole"),
     ]
-    closest = min(dur_map, key=lambda x: abs(x[0] - duration_beats))
+    closest = min(dur_map, key=lambda x: abs(x[0] - snapped))
     return closest[1]
 
 
@@ -135,6 +144,11 @@ def build_part(inst_id, notes_data, arrangement, bpm_val, key_root, key_mode):
         p.append(r)
         return p
 
+    # Round all beat positions to 16th notes to avoid sub-32nd-note artifacts
+    for n in notes_data:
+        n["start_beat"] = snap_beat(n["start_beat"])
+        n["duration_beats"] = snap_duration(n["duration_beats"])
+
     # Sort notes by beat
     sorted_notes = sorted(notes_data, key=lambda n: n["start_beat"])
 
@@ -162,6 +176,7 @@ def build_part(inst_id, notes_data, arrangement, bpm_val, key_root, key_mode):
             if note_measure_pos > measure_beat_cursor + 0.05:
                 gap = note_measure_pos - measure_beat_cursor
                 gap = min(gap, BEATS_PER_MEASURE - measure_beat_cursor)
+                gap = snap_duration(max(gap, 0.125))
                 if gap > 0.1:
                     r = note.Rest(quarterLength=gap)
                     m.append(r)
@@ -177,7 +192,7 @@ def build_part(inst_id, notes_data, arrangement, bpm_val, key_root, key_mode):
             # Clamp to valid MIDI range and ensure int
             written_pitch = int(max(0, min(127, written_pitch)))
             dur_beats = min(n["duration_beats"], space_left)
-            dur_beats = max(dur_beats, 0.125)
+            dur_beats = snap_duration(max(dur_beats, 0.125))
 
             try:
                 nn = note.Note(written_pitch)
@@ -193,7 +208,8 @@ def build_part(inst_id, notes_data, arrangement, bpm_val, key_root, key_mode):
 
         # Fill remainder of measure
         remainder = BEATS_PER_MEASURE - measure_beat_cursor
-        if remainder > 0.05:
+        if remainder > 0.1:
+            remainder = snap_duration(max(remainder, 0.125))
             r = note.Rest(quarterLength=remainder)
             m.append(r)
 

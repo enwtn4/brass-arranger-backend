@@ -239,12 +239,17 @@ def generate_arrangement(analysis):
         label = section["label"]
         s_beat = section["start_beat"]
         e_beat = section["end_beat"]
+        section_len = e_beat - s_beat
         chords = chord_lookup.get(label, ["C"])
         first_chord = chords[0] if chords else "C"
 
-        # Who carries melody this section?
+        # Skip very short sections (< 2 beats) — merge their energy into the next
+        if section_len < 2.0:
+            continue
+
+        # Who carries melody this section? Pick the candidate with fewest notes so far
         melody_candidates = MELODY_ASSIGN.get(label, ["trumpet1", "tenorSax"])
-        melody_inst = melody_candidates[i % len(melody_candidates)]
+        melody_inst = min(melody_candidates, key=lambda inst: len(parts[inst]))
 
         # Get melody notes for this section
         section_notes = assign_melody_to_section(note_sequence, note_sequence, s_beat, e_beat)
@@ -374,6 +379,18 @@ def get_style_guidance(analysis, parts):
     Call Claude API to generate human-readable style notes per instrument
     and overall performance direction — pure NOLA street feel.
     """
+    FALLBACK = {
+        "trumpet1": "Bright and pushing. Sit on top of the beat. Cut through with stabs.",
+        "trumpet2": "Blend with trumpet 1 but slightly laid back. Parallel 3rds.",
+        "trombone1": "Growl lead. Heavy pocket, slightly behind the beat.",
+        "trombone2": "Block stabs on off beats. Raw tone.",
+        "trombone3": "Low foundation. Ghosted notes, smears on pickup.",
+        "tenorSax": "Smoky and mid-range. Counter-melody, response riffs.",
+        "tuba": "Root-fifth bounce. Heavy, not walking. Sit in the pocket.",
+        "bandDirection": "Heavy pocket. Sit behind the beat. Let the tuba breathe.",
+        "feelNotes": "Raw and aggressive. Space is power. Don't fill everything.",
+    }
+
     try:
         client = anthropic.Anthropic()
 
@@ -384,47 +401,54 @@ def get_style_guidance(analysis, parts):
         section_summary = [f"{s['label']} ({s['start_sec']:.0f}s-{s['end_sec']:.0f}s)" 
                           for s in analysis["sections"]]
 
-        prompt = f"""You are a New Orleans street brass band director. Style: Big 6, Rebirth Brass Band, Hot 8, Young Pinstripes, To Be Continued, Lil Rascals. Urban, raw, heavy pocket. NOT Storyville Stompers. NOT polished traditional. 
+        prompt = f"""You are a New Orleans street brass band director. Style: Big 6, Rebirth Brass Band, Hot 8. Urban, raw, heavy pocket.
 
-Song analysis:
-- Key: {analysis['key']}
-- BPM: {analysis['bpm']}
-- Feel: {analysis['feel']}
-- Sections: {', '.join(section_summary)}
-- Chord progression: {'; '.join(chord_summary)}
+Song: Key={analysis['key']}, BPM={analysis['bpm']}, Feel={analysis['feel']}
+Sections: {', '.join(section_summary)}
+Chords: {'; '.join(chord_summary)}
 
-Write performance direction for each instrument. Be specific to New Orleans street style:
-- How should they play their tone (growl, push, lay back, etc.)
-- Where do they sit in the pocket (on top, slightly behind, etc.)
-- What's their energy in each section
-- Any specific articulation (ghosted notes, bends, smears, stabs)
+Write 1-sentence performance direction for each instrument. Respond ONLY as JSON:
+{{"trumpet1":"...","trumpet2":"...","trombone1":"...","trombone2":"...","trombone3":"...","tenorSax":"...","tuba":"...","bandDirection":"...","feelNotes":"..."}}"""
 
-Respond ONLY as JSON, no markdown:
-{{
-  "trumpet1": "...",
-  "trumpet2": "...",
-  "trombone1": "...",
-  "trombone2": "...",
-  "trombone3": "...",
-  "tenorSax": "...",
-  "tuba": "...",
-  "bandDirection": "...",
-  "feelNotes": "..."
-}}"""
+        for attempt in range(3):
+            try:
+                message = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=500,
+                    messages=[{"role": "user", "content": prompt}]
+                )
 
-        message = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1000,
-            messages=[{"role": "user", "content": prompt}]
-        )
+                text = message.content[0].text.strip()
+                text = text.replace("```json","").replace("```","").strip()
 
-        text = message.content[0].text.strip()
-        text = text.replace("```json","").replace("```","").strip()
-        return json.loads(text)
+                # Try direct parse
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    # Attempt recovery: find the outermost { }
+                    start = text.find("{")
+                    end = text.rfind("}")
+                    if start >= 0 and end > start:
+                        candidate = text[start:end+1]
+                        # Close any unclosed strings
+                        in_string = False
+                        for ch in candidate:
+                            if ch == '"':
+                                in_string = not in_string
+                        if in_string:
+                            candidate += '"'
+                        # Close any unclosed braces
+                        opens = candidate.count("{") - candidate.count("}")
+                        candidate += "}" * opens
+                        return json.loads(candidate)
+                    raise
+            except Exception as retry_err:
+                print(f"[arranger] Style guidance attempt {attempt+1} failed: {retry_err}")
+                continue
+
+        print("[arranger] All style guidance attempts failed, using fallback")
+        return FALLBACK
 
     except Exception as e:
         print(f"[arranger] Style guidance failed: {e}")
-        return {
-            "bandDirection": "Heavy pocket. Sit behind the beat. Let the tuba breathe.",
-            "feelNotes": "Raw and aggressive. Space is power. Don't fill everything.",
-        }
+        return FALLBACK
