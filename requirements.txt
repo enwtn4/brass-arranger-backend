@@ -1,0 +1,11 @@
+flask==3.0.3
+flask-cors==4.0.1
+librosa==0.10.2
+numpy==1.26.4
+basic-pitch==0.3.5
+pretty_midi==0.2.10
+music21==9.1.0
+anthropic==0.34.2
+demucs==4.0.1
+soundfile==0.12.1
+scipy==1.13.1
